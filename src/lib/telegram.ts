@@ -8,6 +8,8 @@ import { summarizeRepoWithAI } from './ai';
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_API_URL = `https://api.telegram.org/bot${BOT_TOKEN}`;
+const TELEGRAM_MESSAGE_LIMIT = 4096;
+const TELEGRAM_SAFE_CHUNK_LENGTH = 3900;
 
 /**
  * Sends a HTML/Markdown formatted message to a specific Telegram Chat ID
@@ -18,19 +20,32 @@ export async function sendTelegramMessage(chatId: string, htmlMessage: string): 
     return false;
   }
 
-  try {
-    await axios.post(`${TELEGRAM_API_URL}/sendMessage`, {
-      chat_id: chatId,
-      text: htmlMessage,
-      parse_mode: 'HTML',
-      disable_web_page_preview: false,
-    });
-    return true;
-  } catch (error: unknown) {
-    const errMessage = error instanceof Error ? error.message : 'Unknown error';
-    console.error(`Failed to send Telegram message to ${chatId}:`, errMessage);
-    return false;
+  const messageParts = splitTelegramMessage(htmlMessage);
+
+  for (const text of messageParts) {
+    try {
+      await axios.post(`${TELEGRAM_API_URL}/sendMessage`, {
+        chat_id: chatId,
+        text,
+        parse_mode: 'HTML',
+        disable_web_page_preview: false,
+      });
+    } catch (error: unknown) {
+      let errMessage = error instanceof Error ? error.message : 'Unknown error';
+
+      if (axios.isAxiosError(error) && error.response?.data) {
+        errMessage =
+          typeof error.response.data === 'string'
+            ? error.response.data
+            : JSON.stringify(error.response.data);
+      }
+
+      console.error(`Failed to send Telegram message to ${chatId}:`, errMessage);
+      return false;
+    }
   }
+
+  return true;
 }
 
 /**
@@ -38,7 +53,7 @@ export async function sendTelegramMessage(chatId: string, htmlMessage: string): 
  */
 export function formatTelegramDigest(repos: Record<string, unknown>[], dateStr: string): string {
   let message = `🔥 <b>GITHUB TRENDING DAILY DIGEST</b> 🔥\n`;
-  message += `📅 <i>${dateStr}</i>\n\n`;
+  message += `📅 <i>${escapeHtml(dateStr)}</i>\n\n`;
   message += `🤖 <i>Bản tin được tổng hợp & phân tích bởi AI Curator:</i>\n\n`;
 
   repos.forEach((repo, index) => {
@@ -54,27 +69,72 @@ export function formatTelegramDigest(repos: Record<string, unknown>[], dateStr: 
     const aiSummary = repo.aiSummary as Record<string, string> | undefined;
     const description = String(repo.description || '');
 
-    message += `<b>${num}. <a href="${url}">${author}/${name}</a></b> (${language})\n`;
+    message += `<b>${num}. <a href="${escapeHtmlAttribute(url)}">${escapeHtml(author)}/${escapeHtml(
+      name
+    )}</a></b> (${escapeHtml(language)})\n`;
     message += `⭐ <b>${starsStr}</b> stars (+${periodStarsStr} hôm nay)\n`;
 
     if (aiSummary) {
-      message += `🎯 <b>Mục đích:</b> ${escapeHtml(aiSummary.purpose || '')}\n`;
-      message += `🚀 <b>Điểm nổi bật:</b> ${escapeHtml(aiSummary.highlights || '')}\n`;
-      message += `💡 <b>Ứng dụng:</b> ${escapeHtml(aiSummary.useCases || '')}\n`;
+      message += `🎯 <b>Mục đích:</b> ${escapeHtml(truncateText(aiSummary.purpose || '', 650))}\n`;
+      message += `🚀 <b>Điểm nổi bật:</b> ${escapeHtml(
+        truncateText(aiSummary.highlights || '', 650)
+      )}\n`;
+      message += `💡 <b>Ứng dụng:</b> ${escapeHtml(truncateText(aiSummary.useCases || '', 650))}\n`;
     } else if (description) {
-      message += `📝 <i>${escapeHtml(description)}</i>\n`;
+      message += `📝 <i>${escapeHtml(truncateText(description, 500))}</i>\n`;
     }
 
     message += `\n-------------------------------\n\n`;
   });
 
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
-  message += `🌐 Xem chi tiết Dashboard tại <a href="${appUrl}">${appUrl}</a>!`;
+  message += `🌐 Xem chi tiết Dashboard tại <a href="${escapeHtmlAttribute(appUrl)}">${escapeHtml(
+    appUrl
+  )}</a>!`;
   return message;
 }
 
 function escapeHtml(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function escapeHtmlAttribute(text: string): string {
+  return escapeHtml(text).replace(/"/g, '&quot;');
+}
+
+function truncateText(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength).trimEnd()}...`;
+}
+
+function splitTelegramMessage(message: string): string[] {
+  if (message.length <= TELEGRAM_MESSAGE_LIMIT) {
+    return [message];
+  }
+
+  const parts: string[] = [];
+  let remaining = message;
+
+  while (remaining.length > TELEGRAM_SAFE_CHUNK_LENGTH) {
+    let splitAt = remaining.lastIndexOf('\n\n', TELEGRAM_SAFE_CHUNK_LENGTH);
+
+    if (splitAt < 1) {
+      splitAt = remaining.lastIndexOf('\n', TELEGRAM_SAFE_CHUNK_LENGTH);
+    }
+
+    if (splitAt < 1) {
+      splitAt = TELEGRAM_SAFE_CHUNK_LENGTH;
+    }
+
+    parts.push(remaining.slice(0, splitAt).trimEnd());
+    remaining = remaining.slice(splitAt).trimStart();
+  }
+
+  if (remaining) {
+    parts.push(remaining);
+  }
+
+  return parts;
 }
 
 /**
