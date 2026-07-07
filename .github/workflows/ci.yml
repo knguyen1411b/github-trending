@@ -1,0 +1,42 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build-and-lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Check Prettier Formatting
+        run: pnpm format:check
+
+      - name: Run ESLint
+        run: pnpm lint
+
+      - name: Next.js Production Build
+        run: pnpm build
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI || 'mongodb://localhost:27017/dummy' }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || 'dummy_key' }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || 'dummy_token' }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET || 'dummy_secret' }}
